@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hanabi-bot"
+version = "0.0.1"
+description = "Python port of the Scala Hanabi reactor-convention bot for hanab.live"
+requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Kevin Zhou", email = "kzhou@monad.foundation" }]
+dependencies = [
+    "websockets>=12.0",
+    "httpx>=0.27.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hanabi_bot"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/hanabi_bot/data/variants.json" = "hanabi_bot/data/variants.json"
+"src/hanabi_bot/data/suits.json" = "hanabi_bot/data/suits.json"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = "src"
+packages = ["hanabi_bot"]
