@@ -16,16 +16,16 @@ from hanabi_bot.basics.card import CardStatus, ConvData
 from hanabi_bot.basics.clue import ClueKind
 from hanabi_bot.basics.interp import ClueInterp, DiscardInterp
 from hanabi_bot.basics.player import Player
-from hanabi_bot.basics.state import State
+from hanabi_bot.basics.state import HAND_SIZE, State
 
 if TYPE_CHECKING:
     from .reactor import Reactor, ReactorWC
 
 
-def calc_slot(focus_slot: int, slot: int) -> int:
+def calc_slot(focus_slot: int, slot: int, hand_size: int) -> int:
     """Reactor's slot-arithmetic: target/react slot mapping. Both inputs/output are 1-indexed."""
-    other = (focus_slot + 5 - slot) % 5
-    return 5 if other == 0 else other
+    other = (focus_slot + hand_size - slot) % hand_size
+    return hand_size if other == 0 else other
 
 
 def _calc_target_slot(prev: Reactor, game: Reactor, order: int, wc: ReactorWC) -> tuple[int, int] | None:
@@ -33,7 +33,7 @@ def _calc_target_slot(prev: Reactor, game: Reactor, order: int, wc: ReactorWC) -
     react_slot = prev.state.hands[wc.reacter].index(order) + 1 if order in prev.state.hands[wc.reacter] else None
     if react_slot is None:
         return None
-    target_slot = calc_slot(wc.focus_slot, react_slot)
+    target_slot = calc_slot(wc.focus_slot, react_slot, HAND_SIZE[prev.state.num_players])
     if target_slot < 1 or target_slot > len(wc.receiver_hand):
         return None
     receive_order = wc.receiver_hand[target_slot - 1]
@@ -64,13 +64,14 @@ def elim_dc_dc(
 ) -> tuple[Player, tuple[ConvData, ...]]:
     """After a 'discard-discard' reactive interpretation, eliminate trash from earlier slots."""
     # First, ensure earlier slots have no playables (they were already not played).
+    hand_size = HAND_SIZE[state.num_players]
     new_common, new_meta = elim_play_play(
         state, common, meta, reacter, receiver_hand, focus_slot, len(receiver_hand) + 1
     )
     for i in range(target_slot - 1):
         receive_order = receiver_hand[i]
         status = new_meta[receive_order].status
-        react_slot = calc_slot(focus_slot, i + 1)
+        react_slot = calc_slot(focus_slot, i + 1, hand_size)
         target_card = receiver_hand[target_slot - 1] if target_slot - 1 < len(receiver_hand) else None
         skip = (
             status == CardStatus.CALLED_TO_PLAY
@@ -107,13 +108,14 @@ def elim_play_dc(
     target_slot: int,
 ) -> tuple[Player, tuple[ConvData, ...]]:
     """After a 'play-discard' reactive interpretation, eliminate trash from earlier slots."""
+    hand_size = HAND_SIZE[state.num_players]
     new_common, new_meta = elim_play_play(
         state, common, meta, reacter, receiver_hand, focus_slot, len(receiver_hand) + 1
     )
     for i in range(target_slot - 1):
         receive_order = receiver_hand[i]
         status = new_meta[receive_order].status
-        react_slot = calc_slot(focus_slot, i + 1)
+        react_slot = calc_slot(focus_slot, i + 1, hand_size)
         target_card = receiver_hand[target_slot - 1] if target_slot - 1 < len(receiver_hand) else None
         skip = (
             status == CardStatus.CALLED_TO_PLAY
@@ -152,12 +154,13 @@ def elim_dc_play(
     target_slot: int,
 ) -> tuple[Player, tuple[ConvData, ...]]:
     """After a 'discard-play' reactive interpretation, eliminate playables from earlier slots."""
+    hand_size = HAND_SIZE[state.num_players]
     new_meta = meta
     new_common = common
     for i in range(target_slot - 1):
         receive_order = receiver_hand[i]
         status = new_meta[receive_order].status
-        react_slot = calc_slot(focus_slot, i + 1)
+        react_slot = calc_slot(focus_slot, i + 1, hand_size)
         if status == CardStatus.CALLED_TO_PLAY or status == CardStatus.CALLED_TO_DISCARD:
             continue
         if react_slot < 1 or react_slot > len(state.hands[reacter]):
@@ -186,12 +189,13 @@ def elim_play_play(
     """For each earlier-slot card whose reacter-card matches exactly one playable id,
     pin the receiver card to that single id; else eliminate all playables.
     """
+    hand_size = HAND_SIZE[state.num_players]
     new_meta = meta
     new_common = common
     for i in range(target_slot - 1):
         receive_order = receiver_hand[i]
         status = new_meta[receive_order].status
-        react_slot = calc_slot(focus_slot, i + 1)
+        react_slot = calc_slot(focus_slot, i + 1, hand_size)
         if status == CardStatus.CALLED_TO_PLAY or status == CardStatus.CALLED_TO_DISCARD:
             continue
         if react_slot < 1 or react_slot > len(state.hands[reacter]):

@@ -19,8 +19,10 @@ from hanabi_bot.basics.fix import (
 from hanabi_bot.basics.identity import Identity, IdentitySet
 from hanabi_bot.basics.interp import ClueInterp
 from hanabi_bot.basics.player import players_until
-from hanabi_bot.basics.state import State
+from hanabi_bot.basics.state import HAND_SIZE, State
 from hanabi_bot.basics.variant import BROWNISH, PINKISH, RAINBOWISH
+
+from .reactive_table import reactive_value_table
 
 if TYPE_CHECKING:
     from .reactor import Reactor
@@ -48,7 +50,8 @@ def _reactive_focus(state: State, receiver: int, action: ClueAction) -> int:
 
     if clue.kind == ClueKind.COLOUR:
         if state.includes_variant(RAINBOWISH) or state.variant.rainbow_s:
-            return clue.value + 1
+            table = reactive_value_table(state.variant, HAND_SIZE[state.num_players])
+            return table[clue.value]
         return focus_i + 1
     # Rank
     if state.includes_variant(PINKISH) or state.variant.pink_s:

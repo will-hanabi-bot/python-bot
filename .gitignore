@@ -29,4 +29,4 @@ uv.lock
 .DS_Store
 Thumbs.db
 
-logs/
+*.log

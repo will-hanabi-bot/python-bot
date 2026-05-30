@@ -2,9 +2,10 @@
 
 Port of scala-bot/src/scala_bot/reactor/reactor.scala.
 
-Endgame solver: STUBBED. The Scala bot uses a Monte Carlo solver
-(`scala_bot.endgame.EndgameSolver`) for late-game decisions. Porting that ~625 LOC
-module is out of scope for Stage 4; take_action skips the solver branch.
+Endgame solver: ENABLED. When `state.rem_score <= len(state.variant.suits) + 1`,
+`take_action` invokes `hanabi_bot.endgame.EndgameSolver` for a Monte Carlo solve
+with a 10-second timeout; falls back to the heuristic if winrate is below 1% or
+the solver bails out.
 
 Iterative-debugging note: reactor's interpret_clue dispatch is intricate and depends
 on `connectable_simple`, `check_fix`, the clue-result statistics, and per-perspective
@@ -15,7 +16,9 @@ tests/test_reactor/ for the canonical behaviors.
 from __future__ import annotations
 
 import dataclasses
+import logging
 from dataclasses import dataclass
+from fractions import Fraction
 
 from hanabi_bot.basics.action import (
     Action,
@@ -44,6 +47,8 @@ from hanabi_bot.basics.sarcastic import (
     interpret_useful_dc,
 )
 from hanabi_bot.basics.state import State
+
+log = logging.getLogger("hanabi_bot.reactor")
 
 
 @dataclass(frozen=True, slots=True)
@@ -498,6 +503,90 @@ class Reactor(Game):
 
         return eval_action(self, action)
 
+    def find_all_clues(self, giver: int) -> list[PerformAction]:
+        """Enumerate clue candidates the giver could give, sorted by heuristic value.
+
+        Port of reactor.scala `findAllClues` (lines 565-621). Filters out clues that
+        produce mistake interpretations and ranks the rest by `get_result`.
+        """
+        from hanabi_bot.basics.interp import ClueInterp
+
+        from .state_eval import get_result
+
+        state = self.state
+        added_useless_clue = False
+        scored: list[tuple[Clue, float]] = []
+
+        for target in range(state.num_players):
+            if target == giver:
+                continue
+            for clue in state.all_valid_clues(target):
+                list_orders = state.clue_touched(state.hands[target], clue.kind.value, clue.value)
+                # Only touches previously-clued trash → mostly useless.
+                if list_orders and all(
+                    state.deck[o].clued
+                    and (id_ := state.deck[o].id()) is not None
+                    and state.is_basic_trash(id_)
+                    for o in list_orders
+                ):
+                    if added_useless_clue:
+                        continue
+                    added_useless_clue = True
+                    scored.append((clue, 0.0))
+                    continue
+
+                action = ClueAction(giver, clue.target, tuple(list_orders), clue.base)
+                hypo = self.simulate_clue(action)
+                assert isinstance(hypo, Reactor)
+                if hypo.last_move == ClueInterp.MISTAKE:
+                    continue
+
+                clue_result = get_result(self, hypo, action)
+                useful = clue_result > -1 and (
+                    hypo.last_move == ClueInterp.REACTIVE
+                    or hypo.common.hypo_score > self.common.hypo_score
+                    or any(
+                        (self.deck_ids[o] is None or state.is_useful(self.deck_ids[o]))
+                        and hypo.state.deck[o].clued
+                        and hypo.common.thoughts[o].possible.length
+                        < self.common.thoughts[o].possible.length
+                        for o in state.hands[clue.target]
+                    )
+                )
+                if useful:
+                    scored.append((clue, clue_result))
+                elif not added_useless_clue:
+                    added_useless_clue = True
+                    scored.append((clue, 0.0))
+                # else: skip; redundant useless clue
+
+        scored.sort(key=lambda t: -t[1])
+        out: list[PerformAction] = []
+        for clue, _ in scored:
+            if clue.kind == ClueKind.COLOUR:
+                out.append(PerformColour(clue.target, clue.value))
+            else:
+                out.append(PerformRank(clue.target, clue.value))
+        return out
+
+    def find_all_discards(self, player_index: int) -> list[PerformAction]:
+        """Enumerate discard candidates for player_index — just one preferred target.
+
+        Port of reactor.scala `findAllDiscards` (lines 623-630). Returns the trash
+        head, else chop, else locked_discard.
+        """
+        trash = self.common.thinks_trash(self, player_index)
+        if trash:
+            target = trash[0]
+        else:
+            chop = self.chop(player_index)
+            target = (
+                chop
+                if chop is not None
+                else self.players[player_index].locked_discard(self.state, player_index)
+            )
+        return [PerformDiscard(target)]
+
     def update_turn(self, action: TurnAction) -> Reactor:
         """Run on every TurnAction. Clears stale waiting, advances queued play inferences.
 
@@ -596,11 +685,31 @@ class Reactor(Game):
                 ):
                     urgent_action = PerformDiscard(urgent_order)
 
+        # Endgame solver: Monte Carlo over deck permutations. Runs BEFORE the
+        # urgent-action shortcut so a stall clue can override an unwinnable
+        # called-to-play directive (see replay 1875304 turn 22). If the solver
+        # bails or doesn't find a winning line, fall back to the urgent action
+        # so non-endgame conventional behavior is unchanged.
+        if state.rem_score <= len(state.variant.suits) + 1:
+            from hanabi_bot.endgame.solver import EndgameSolver
+
+            log.info("entering endgame solver (rem_score=%d)", state.rem_score)
+            try:
+                result = EndgameSolver(monte_carlo=True, timeout=30.0).solve(self)
+            except Exception:
+                log.exception("endgame solver crashed; falling back to heuristic")
+                result = "exception"
+            if isinstance(result, tuple):
+                perform, winrate = result
+                if winrate >= Fraction(1, 100):
+                    log.info("endgame solved: %s winrate=%s", perform, winrate)
+                    return perform
+                log.info("endgame winrate below 1%% (%s); falling back to heuristic", winrate)
+            else:
+                log.info("endgame solver bailed: %r; falling back to heuristic", result)
+
         if urgent_action is not None:
             return urgent_action
-
-        # Endgame solver stub: skip.
-        # if state.rem_score <= len(state.variant.suits) + 1: ...
 
         # Find playable orders.
         common_p = self.common.obvious_playables(self, state.our_player_index)

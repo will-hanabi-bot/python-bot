@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from hanabi_bot.basics.card import CardStatus
 from hanabi_bot.basics.interp import ClueInterp
 from hanabi_bot.basics.player import players_until
-from hanabi_bot.basics.state import State
+from hanabi_bot.basics.state import HAND_SIZE, State
 
 from .interpret_reaction import calc_slot
 
@@ -101,9 +101,10 @@ def interpret_reactive_colour(
         return 99 if unclued_dupe else i
     play_targets.sort(key=_sort_key)
 
+    hand_size = HAND_SIZE[state.num_players]
     for _target, index in play_targets:
         target_slot = index + 1
-        react_slot = calc_slot(focus_slot, target_slot)
+        react_slot = calc_slot(focus_slot, target_slot, hand_size)
         if react_slot < 1 or react_slot > len(state.hands[reacter]):
             continue
         react_order = state.hands[reacter][react_slot - 1]
@@ -177,7 +178,7 @@ def interpret_reactive_colour(
         if state.next_player_index(action.giver) != reacter and game.meta[target].status == CardStatus.CALLED_TO_PLAY:
             continue
         target_slot = index + 1
-        react_slot = calc_slot(focus_slot, target_slot)
+        react_slot = calc_slot(focus_slot, target_slot, hand_size)
         if react_slot < 1 or react_slot > len(state.hands[reacter]):
             continue
         react_order = state.hands[reacter][react_slot - 1]
@@ -237,9 +238,10 @@ def interpret_reactive_rank(
         return 99 if unclued_dupe else i
     play_targets.sort(key=_sort_key)
 
+    hand_size = HAND_SIZE[state.num_players]
     for target, index in play_targets:
         target_slot = index + 1
-        react_slot = calc_slot(focus_slot, target_slot)
+        react_slot = calc_slot(focus_slot, target_slot, hand_size)
         if react_slot < 1 or react_slot > len(state.hands[reacter]):
             continue
         react_order = state.hands[reacter][react_slot - 1]
@@ -276,7 +278,7 @@ def interpret_reactive_rank(
         return None, game
 
     for react_slot in (1, 5, 4, 3, 2):
-        target_slot = calc_slot(focus_slot, react_slot)
+        target_slot = calc_slot(focus_slot, react_slot, hand_size)
         if react_slot < 1 or react_slot > len(state.hands[reacter]):
             continue
         react_order = state.hands[reacter][react_slot - 1]

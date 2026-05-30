@@ -84,13 +84,29 @@ class BotClient:
         print(f"server warning: {data}")
 
     def _on_chat(self, data: dict[str, Any]) -> None:
-        if data.get("recipient") != self.username:
-            return
         msg = data.get("msg", "")
         if not msg.startswith("/"):
             return
+        recipient = data.get("recipient", "") or ""
+        room = data.get("room", "") or ""
+        in_pm = recipient == self.username
+        in_room = recipient == "" and room.startswith("table")
+        if not in_pm and not in_room:
+            return
         args = msg[1:].split(" ")
         cmd = args[0]
+
+        # Commands available from both PM and in-table chat.
+        if cmd == "leaveall":
+            self._chat_leaveall(room)
+            return
+        if cmd == "settings":
+            self._chat_settings(room)
+            return
+
+        # Remaining commands are PM-only (legacy behavior).
+        if not in_pm:
+            return
         if cmd == "join":
             target = args[1] if len(args) > 1 else None
             self._chat_join(data, target)
@@ -366,3 +382,68 @@ class BotClient:
                 "action",
                 PerformTerminate(target=0, value=0).to_json(tid),
             )
+
+    def _resolve_target_table(self, room: str) -> int | None:
+        """For commands that can come from PM or a table room, figure out which table to act on.
+
+        From a room (`tableN`): use the suffix. From a PM (`room` empty): use the single
+        currently-tracked table if there's exactly one, else None.
+        """
+        if room.startswith("table"):
+            try:
+                return int(room.removeprefix("table"))
+            except ValueError:
+                return None
+        # PM context.
+        if len(self.games) == 1:
+            return next(iter(self.games))
+        if len(self.tables) == 1:
+            return int(next(iter(self.tables)))
+        return None
+
+    def _chat_leaveall(self, room: str) -> None:
+        """Leave the table: `tableLeave` pregame, `tableUnattend` if the game has started.
+
+        Mirrors scala-bot/.../command.scala:357-365 (`leaveRoom`). `tableLeave` vacates
+        the bot's player seat in pregame; once the game has started the server doesn't
+        allow leaving, so we fall back to `tableUnattend` (stop spectating).
+        """
+        table_id = self._resolve_target_table(room)
+        if table_id is None:
+            return
+        game = self.games.get(table_id)
+        game_started = game is not None and game.in_progress
+        cmd = "tableUnattend" if game_started else "tableLeave"
+        self.transport.queue_send(cmd, {"tableID": table_id})
+
+    def _chat_settings(self, room: str) -> None:
+        from hanabi_bot.basics.state import HAND_SIZE
+        from hanabi_bot.basics.variant import get_variant
+        from hanabi_bot.conventions.reactor.reactive_table import format_reactive_settings
+
+        table_id = self._resolve_target_table(room)
+        if table_id is None:
+            return
+
+        game = self.games.get(table_id)
+        if game is not None:
+            variant = game.state.variant
+            hand_size = HAND_SIZE[game.state.num_players]
+        else:
+            table = self.tables.get(table_id)
+            if table is None:
+                return
+            variant_name = (table.get("options") or {}).get("variantName") or table.get("variant")
+            if not variant_name:
+                return
+            variant = get_variant(variant_name)
+            num_players = int((table.get("options") or {}).get("numPlayers") or table.get("numPlayers") or 3)
+            if num_players < 2 or num_players >= len(HAND_SIZE):
+                num_players = 3
+            hand_size = HAND_SIZE[num_players]
+
+        msg = format_reactive_settings(variant, hand_size)
+        self.transport.queue_send(
+            "chat",
+            {"msg": msg, "recipient": "", "room": f"table{table_id}"},
+        )
